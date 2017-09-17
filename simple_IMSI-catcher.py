@@ -65,6 +65,7 @@ import json
 from optparse import OptionParser
 import datetime
 import io
+import os
 import socket
 
 imsitracker = None
@@ -260,6 +261,7 @@ class tracker:
 				# new TMSI to an ISMI
 				do_print=True
 				self.tmsis[tmsi1]=imsi2
+				self.tmsi_seen(arfcn, tmsi1, imsi2)
 			if tmsi2 and (tmsi2 not in self.tmsis or self.tmsis[tmsi2] != imsi2):
 				# new TMSI to an ISMI
 				do_print=True
@@ -289,12 +291,36 @@ class tracker:
 				do_print=False
 				if tmsi1 and tmsi1 not in self.tmsis:
 					do_print=True
-					self.tmsis[tmsi1]=""
+					self.tmsi_seen(arfcn, tmsi1, None)
+					#self.tmsis[tmsi1]=""
 				if tmsi1 and tmsi1 not in self.tmsis:
 					do_print=True
-					self.tmsis[tmsi2]=""
+					self.tmsi_seen(arfcn, tmsi2, None)
+					#self.tmsis[tmsi2]=""
 				if do_print:
 					self.pfields(str(n), self.str_tmsi(tmsi1), self.str_tmsi(tmsi2), None, str(self.mcc), str(self.mnc), str(self.lac), str(self.cell), p)
+		self.imsi_writeview("meshviewer/build/data/")
+
+	def tmsi_exist(self, arfcn, tmsi):
+		if (arfcn, tmsi) in self.tmsis:
+			return self.tmsis[(arfcn, tmsi)]
+		else:
+			return None
+
+	def tmsi_seen(self, arfcn, tmsi, imsi):
+		now = datetime.datetime.utcnow().replace(microsecond=0)
+		if (arfcn, tmsi) in self.tmsis:
+			self.tmsis[(arfcn,tmsi)]["lastseen"] = now
+		else:
+			self.tmsis[(arfcn, tmsi)] = {
+				"firstseen" : now,
+				"lastseen" : now,
+				}
+		if imsi:
+			self.tmsis[(arfcn,tmsi)]["imsi"] = imsi
+
+	def tmsi_purge(self, arfcn, tmsi = None):
+		pass
 	def imsi_seen(self, imsi, arfcn):
 		now = datetime.datetime.utcnow().replace(microsecond=0)
 		imsi, mcc, mnc = self.decode_imsi(imsi)
@@ -315,6 +341,84 @@ class tracker:
 		for imsi in self.imsistate.keys():
 			if limit > self.imsistate[imsi]["lastseen"]:
 				del self.imsistate[imsi]
+
+	def imsi_writeview(self, savedir):
+		print("Writing %d to to %s" % (len(self.imsistate.keys()), savedir))
+		now = datetime.datetime.utcnow().replace(microsecond=0)
+
+		nodes = dict()
+		gnodes = []
+		links = []
+		nodes['timestamp'] = now.isoformat()
+		nodes['version'] = 1
+		nodes['nodes'] = []
+		arfcnseen = {}
+		nodenum = 0
+		for imsi in self.imsistate.keys():
+			x = self.imsistate[imsi]
+			if x['arfcn'] not in arfcnseen:
+				arfcnseen[x['arfcn']] = nodenum
+				nodes["nodes"].append({
+					"firstseen": x["firstseen"].isoformat(),
+					"lastseen": x["lastseen"].isoformat(),
+					"flags" : { "online" : True },
+					"nodeinfo": {
+						"hostname": "cell-arfcn-%s" % str(x['arfcn']),
+						"node_id": str(x['arfcn']),
+					#"location": {"latitude": 59.953461, "longitude": 10.764291},
+					},
+					"statistics": {"clients": 0 },
+				})
+				gnodes.append({
+				    "id" :	str(x['arfcn']),
+				    "node_id" : str(x['arfcn']),
+				    })
+				nodenum = nodenum + 1
+			nodes["nodes"].append({
+			    "firstseen": x["firstseen"].isoformat(),
+			    "lastseen": x["lastseen"].isoformat(),
+			    "flags" : { "online" : True },
+			    "nodeinfo": {
+				"hostname": "imsi-%s" % str(imsi),
+				"node_id": str(imsi),
+				# FIXME
+				"location": {"latitude": 53.87341, "longitude": 10.669786},
+			    },
+			    "statistics": {"clients": 0 },
+			})
+			gnodes.append({
+			    "id" :	"imsi-%s" % str(imsi),
+			    "node_id" : str(imsi),
+			})
+
+			links.append({
+				'source': nodenum,
+				'target': arfcnseen[x['arfcn']],
+				'tq': 1.0,
+				'bidirect': True,
+				})
+			nodenum = nodenum + 1
+
+		graph = { "batadv" : { "directed" : False,
+				       "graph": [],
+				       "links": links,
+				       "multigraph": False,
+				       "nodes": gnodes,
+				       },
+			  "version": 1}
+
+		with io.open(os.path.join(savedir, 'nodes.json.new'),
+			     'w', encoding='utf8') as file:
+			s = json.dumps(nodes)
+			if isinstance(s, str): s = unicode(s, 'UTF-8')
+			file.write(s)
+		with io.open(os.path.join(savedir, 'graph.json.new'),
+			     'w', encoding='utf8') as file:
+			s = json.dumps(graph)
+			if isinstance(s, str): s = unicode(s, 'UTF-8')
+			file.write(s)
+		os.rename(os.path.join(savedir, 'nodes.json.new'), os.path.join(savedir, 'nodes.json'))
+		os.rename(os.path.join(savedir, 'graph.json.new'), os.path.join(savedir, 'graph.json'))
 
 class gsmtap_hdr(ctypes.BigEndianStructure):
 	_pack_ = 1
